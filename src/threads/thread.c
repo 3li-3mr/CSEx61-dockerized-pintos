@@ -11,6 +11,8 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/fixed-point.h"
+#include "devices/timer.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -36,6 +38,9 @@ static struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
+
+/* ADD global load_avg */
+static fixed_t load_avg;
 
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -170,8 +175,13 @@ thread_create (const char *name, int priority,
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
+  struct thread *cur = thread_current();
   tid_t tid;
 
+  if (thread_mlfqs) {
+    t->nice = cur->nice;
+    t->recent_cpu = cur->recent_cpu;
+  }
   ASSERT (function != NULL);
 
   /* Allocate thread. */
@@ -463,7 +473,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
-
+  t->nice = 0;
+  t->recent_cpu = int_to_fp(0);
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);
@@ -578,6 +589,39 @@ allocate_tid (void)
 
   return tid;
 }
+/* Required Functions */
+int thread_get_nice (void) {
+  return thread_current()->nice;
+}
+
+void thread_set_nice (int nice) {
+  struct thread *cur = thread_current();
+  cur->nice = nice;
+
+  int new_priority = PRI_MAX
+    - fp_to_int_trunc(div_mixed(cur->recent_cpu, 4))
+    - (cur->nice * 2);
+
+  if (new_priority > PRI_MAX) new_priority = PRI_MAX;
+  if (new_priority < PRI_MIN) new_priority = PRI_MIN;
+
+  cur->priority = new_priority;
+
+  if (!list_empty(&ready_list)) {
+    struct thread *highest = list_entry(list_front(&ready_list), struct thread, elem);
+    if (cur->priority < highest->priority)
+      thread_yield();
+  }
+}
+
+int thread_get_recent_cpu (void) {
+  return fp_to_int_round(thread_current()->recent_cpu);
+}
+
+int thread_get_load_avg (void) {
+  return fp_to_int_round(load_avg);
+}
+
 
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */

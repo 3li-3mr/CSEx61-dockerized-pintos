@@ -7,6 +7,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+#include "threads/fixed-point.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -171,7 +172,68 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
-  thread_tick ();
+
+  /* MLFQS logic */
+  if (thread_mlfqs) {
+    struct thread *cur = thread_current();
+
+    /* 1. Increment recent_cpu for running thread */
+    if (cur != idle_thread)
+      cur->recent_cpu = add_mixed(cur->recent_cpu, 1);
+
+    /* 2. Every second: update load_avg and recent_cpu for all threads */
+    if (ticks % TIMER_FREQ == 0) {
+      int ready_threads = list_size(&ready_list);
+      if (cur != idle_thread)
+        ready_threads++;
+
+      /* load_avg = (59/60)*load_avg + (1/60)*ready_threads */
+      load_avg = add_fp(
+          mul_fp(div_fp(int_to_fp(59), int_to_fp(60)), load_avg),
+          mul_fp(div_fp(int_to_fp(1), int_to_fp(60)), int_to_fp(ready_threads))
+      );
+
+      /* Update recent_cpu for all threads */
+      struct list_elem *e;
+      for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+        struct thread *t = list_entry(e, struct thread, allelem);
+
+        if (t != idle_thread) {
+          fixed_t coeff = div_fp(
+              mul_mixed(load_avg, 2),
+              add_mixed(mul_mixed(load_avg, 2), 1)
+          );
+
+          t->recent_cpu = add_mixed(
+              mul_fp(coeff, t->recent_cpu),
+              t->nice
+          );
+        }
+      }
+    }
+
+    /* 3. Every 4 ticks: recompute priority */
+    if (ticks % 4 == 0) {
+      struct list_elem *e;
+
+      for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+        struct thread *t = list_entry(e, struct thread, allelem);
+
+        if (t != idle_thread) {
+          int new_priority = PRI_MAX
+            - fp_to_int_trunc(div_mixed(t->recent_cpu, 4))
+            - (t->nice * 2);
+
+          if (new_priority > PRI_MAX) new_priority = PRI_MAX;
+          if (new_priority < PRI_MIN) new_priority = PRI_MIN;
+
+          t->priority = new_priority;
+        }
+      }
+    }
+  }
+
+  thread_tick();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
