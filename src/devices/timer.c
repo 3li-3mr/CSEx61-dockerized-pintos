@@ -254,6 +254,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
                   t->priority = p;
                 }
             }
+          intr_yield_on_return ();
         }
     }
 

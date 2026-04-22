@@ -163,10 +163,7 @@ sema_up (struct semaphore *sema)
 
   if (!list_empty (&sema->waiters))
     {
-      /* Re-sort in case priorities changed due to donation while
-         the thread was waiting. */
       list_sort (&sema->waiters, thread_priority_compare, NULL);
-
       thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                   struct thread, elem));
     }
@@ -174,10 +171,25 @@ sema_up (struct semaphore *sema)
   sema->value++;
   intr_set_level (old_level);
 
-  /* Yield if the thread we just unblocked has higher priority
-     than the currently running thread. */
-  if (!intr_context ())
-    thread_yield ();
+  /* Conditional Yield: Only yield if the woken thread is higher priority, 
+     and only in strict priority mode. */
+  if (!intr_context () && !thread_mlfqs)
+    {
+      old_level = intr_disable ();
+      if (!list_empty (&ready_list))
+        {
+          /* In strict priority mode, ready_list is kept perfectly sorted, 
+             so list_front is mathematically safe. */
+          struct thread *front = list_entry (list_front (&ready_list), struct thread, elem);
+          if (front->priority > thread_current ()->priority)
+            {
+              intr_set_level (old_level);
+              thread_yield ();
+              return;
+            }
+        }
+      intr_set_level (old_level);
+    }
 }
 
 static void sema_test_helper (void *sema_);
@@ -261,16 +273,14 @@ lock_acquire (struct lock *lock)
 
   if (lock->holder != NULL)
     {
-      /* Record which lock we are waiting on so that
-         thread_donate_priority() can walk the chain. */
       thread_current ()->lock_waiting_for = lock;
 
-      /* Update the lock's max waiter priority. */
       if (thread_current ()->priority > lock->max_priority)
         lock->max_priority = thread_current ()->priority;
 
-      /* Donate priority up the chain of lock dependencies. */
-      thread_donate_priority (thread_current ());
+      /* Barrier: Prevent donation in MLFQS */
+      if (!thread_mlfqs)
+        thread_donate_priority (thread_current ());
     }
 
   intr_set_level (old_level);
@@ -279,12 +289,12 @@ lock_acquire (struct lock *lock)
 
   old_level = intr_disable ();
 
-  /* We now own the lock. */
   thread_current ()->lock_waiting_for = NULL;
   lock->holder = thread_current ();
 
-  /* Track this lock so we can restore priority when we release it. */
-  list_push_back (&thread_current ()->locks_held, &lock->elem);
+  /* Barrier: Prevent lock tracking in MLFQS */
+  if (!thread_mlfqs)
+    list_push_back (&thread_current ()->locks_held, &lock->elem);
 
   intr_set_level (old_level);
 }
@@ -307,8 +317,9 @@ lock_try_acquire (struct lock *lock)
   if (success)
     {
       lock->holder = thread_current ();
-      /* Track this lock for priority donation purposes. */
-      list_push_back (&thread_current ()->locks_held, &lock->elem);
+      /* Barrier: Prevent lock tracking in MLFQS */
+      if (!thread_mlfqs)
+        list_push_back (&thread_current ()->locks_held, &lock->elem);
     }
   return success;
 }
@@ -326,25 +337,22 @@ lock_release (struct lock *lock)
 
   enum intr_level old_level = intr_disable ();
 
-  /* Remove this lock from our held-locks list. */
-  list_remove (&lock->elem);
+  /* Barrier: Prevent strict priority revocation in MLFQS */
+  if (!thread_mlfqs)
+    {
+      list_remove (&lock->elem);
+      lock->max_priority = PRI_MIN;
+      thread_update_priority (thread_current ());
+    }
 
-  /* Reset the lock's max_priority for future acquisitions. */
-  lock->max_priority = PRI_MIN;
   lock->holder = NULL;
-
-  /* Recompute our effective priority now that we dropped this lock.
-     If we still hold other locks with waiters, those donations
-     remain in effect. */
-  thread_update_priority (thread_current ());
 
   intr_set_level (old_level);
 
   sema_up (&lock->semaphore);
-
-  /* Yield if releasing this lock woke a higher-priority thread. */
-  if (!intr_context ())
-    thread_yield ();
+  
+  /* Note: The unconditional yield that was here has been DELETED. 
+     sema_up already perfectly handles the preemption check. */
 }
 
 /* Returns true if the current thread holds LOCK, false
