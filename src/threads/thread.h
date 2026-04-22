@@ -25,6 +25,10 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* Forward declaration needed because thread.h and synch.h
+   include each other. */
+struct lock;
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -75,6 +79,7 @@ typedef int tid_t;
    the `magic' member of the running thread's `struct thread' is
    set to THREAD_MAGIC.  Stack overflow will normally change this
    value, triggering the assertion. */
+
 /* The `elem' member has a dual purpose.  It can be an element in
    the run queue (thread.c), or it can be an element in a
    semaphore wait list (synch.c).  It can be used these two ways
@@ -88,14 +93,17 @@ struct thread
     enum thread_status status;          /* Thread state. */
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
-    int priority;                       /* Priority. */
+    int priority;                       /* Effective (possibly donated) priority. */
+    int base_priority;                  /* Base priority before donations. */
+    struct list locks_held;             /* All locks currently held by this thread. */
+    struct lock *lock_waiting_for;      /* Lock this thread is blocked on, or NULL. */
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-    int nice;                 /* Niceness value */
-    fixed_t recent_cpu;       /* Recent CPU usage */
-    int64_t wakeup_tick;   /* tick to wake up at, used by timer_sleep */
+    int nice;                           /* Niceness value for MLFQS. */
+    fixed_t recent_cpu;                 /* Recent CPU usage for MLFQS. */
+    int64_t wakeup_tick;                /* Tick to wake up at, used by timer_sleep. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -145,5 +153,9 @@ int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
+
+/* Priority donation helpers. */
+void thread_donate_priority (struct thread *t);
+void thread_update_priority (struct thread *t);
 
 #endif /* threads/thread.h */
