@@ -95,6 +95,7 @@ struct thread
     struct list_elem elem;              /* List element. */
     int nice;                 /* Niceness value */
     fixed_t recent_cpu;       /* Recent CPU usage */
+    int64_t wakeup_tick;   /* tick to wake up at, used by timer_sleep */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

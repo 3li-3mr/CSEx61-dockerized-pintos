@@ -75,6 +75,9 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static void mlfqs_update_load_avg (void);
+static void mlfqs_update_recent_cpu (struct thread *t, void *aux);
+static void mlfqs_update_priority (struct thread *t, void *aux);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -97,6 +100,8 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+
+  load_avg = int_to_fp(0);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -169,52 +174,49 @@ thread_print_stats (void)
    Priority scheduling is the goal of Problem 1-3. */
 tid_t
 thread_create (const char *name, int priority,
-               thread_func *function, void *aux) 
+               thread_func *function, void *aux)
 {
   struct thread *t;
-  t = palloc_get_page(PAL_ZERO);
-  if (t == NULL)
-      return TID_ERROR;
-      
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
-  struct thread *cur = thread_current();
+  struct thread *cur = thread_current ();
   tid_t tid;
-
-  if (thread_mlfqs) {
-    t->nice = cur->nice;
-    t->recent_cpu = cur->recent_cpu;
-  }
+ 
   ASSERT (function != NULL);
-
-  /* Allocate thread. */
   t = palloc_get_page (PAL_ZERO);
   if (t == NULL)
     return TID_ERROR;
-
-  /* Initialize thread. */
+ 
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
-
-  /* Stack frame for kernel_thread(). */
+ 
+  /* Inherit nice and recent_cpu from parent, then compute priority */
+  if (thread_mlfqs)
+    {
+      t->nice       = cur->nice;
+      t->recent_cpu = cur->recent_cpu;
+      mlfqs_update_priority (t, NULL);   /* sets t->priority correctly */
+    }
+ 
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
   kf->function = function;
   kf->aux = aux;
-
-  /* Stack frame for switch_entry(). */
+ 
   ef = alloc_frame (t, sizeof *ef);
   ef->eip = (void (*) (void)) kernel_thread;
-
-  /* Stack frame for switch_threads(). */
+ 
   sf = alloc_frame (t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
-
-  /* Add to run queue. */
+ 
   thread_unblock (t);
-
+ 
+  /* Yield immediately if the new thread has higher priority */
+  if (t->priority > thread_current ()->priority)
+    thread_yield ();
+ 
   return tid;
 }
 
@@ -347,9 +349,26 @@ thread_foreach (thread_action_func *func, void *aux)
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
-thread_set_priority (int new_priority) 
+thread_set_priority (int new_priority)
 {
+  if (thread_mlfqs)
+    return;
+
   thread_current ()->priority = new_priority;
+
+  if (!list_empty (&ready_list))
+    {
+      struct list_elem *e;
+      int max_pri = PRI_MIN - 1;
+      for (e = list_begin (&ready_list); e != list_end (&ready_list); e = list_next (e))
+        {
+          struct thread *t = list_entry (e, struct thread, elem);
+          if (t->priority > max_pri)
+            max_pri = t->priority;
+        }
+      if (max_pri > thread_current ()->priority)
+        thread_yield ();
+    }
 }
 
 /* Returns the current thread's priority. */
@@ -570,32 +589,89 @@ int thread_get_nice (void) {
   return thread_current()->nice;
 }
 
-void thread_set_nice (int nice) {
-  struct thread *cur = thread_current();
+void
+thread_set_nice (int nice)
+{
+  enum intr_level old_level = intr_disable ();
+
+  struct thread *cur = thread_current ();
   cur->nice = nice;
+  mlfqs_update_priority (cur, NULL);
 
-  int new_priority = PRI_MAX
-    - fp_to_int_trunc(div_mixed(cur->recent_cpu, 4))
-    - (cur->nice * 2);
+  if (!list_empty (&ready_list))
+    {
+      struct list_elem *e;
+      int max_pri = PRI_MIN - 1;
+      for (e = list_begin (&ready_list); e != list_end (&ready_list); e = list_next (e))
+        {
+          struct thread *t = list_entry (e, struct thread, elem);
+          if (t->priority > max_pri)
+            max_pri = t->priority;
+        }
+      if (max_pri > cur->priority)
+        {
+          intr_set_level (old_level);
+          thread_yield ();
+          return;
+        }
+    }
 
-  if (new_priority > PRI_MAX) new_priority = PRI_MAX;
-  if (new_priority < PRI_MIN) new_priority = PRI_MIN;
-
-  cur->priority = new_priority;
-
-  if (!list_empty(&ready_list)) {
-    struct thread *highest = list_entry(list_front(&ready_list), struct thread, elem);
-    if (cur->priority < highest->priority)
-      thread_yield();
-  }
+  intr_set_level (old_level);
 }
 
-int thread_get_recent_cpu (void) {
-  return fp_to_int_round(thread_current()->recent_cpu);
+
+
+int
+thread_get_recent_cpu (void)
+{
+  /* Pintos tests expect 100 * recent_cpu rounded to nearest int */
+  return fp_to_int_round (mul_mixed (thread_current ()->recent_cpu, 100));
 }
 
-int thread_get_load_avg (void) {
-  return fp_to_int_round(load_avg);
+int
+thread_get_load_avg (void)
+{
+  /* Pintos tests expect 100 * load_avg rounded to nearest int */
+  return fp_to_int_round (mul_mixed (load_avg, 100));
+}
+
+static void
+mlfqs_update_load_avg (void)
+{
+  int ready_threads = (int) list_size (&ready_list);
+  if (thread_current () != idle_thread)
+    ready_threads++;          /* running thread counts as ready */
+ 
+  load_avg = add_fp (
+    mul_fp  (div_fp (int_to_fp (59), int_to_fp (60)), load_avg),
+    mul_mixed (div_fp (int_to_fp (1),  int_to_fp (60)), ready_threads)
+  );
+}
+
+static void
+mlfqs_update_recent_cpu (struct thread *t, void *aux UNUSED)
+{
+  fixed_t twice_load = mul_mixed (load_avg, 2);
+  fixed_t coeff      = div_fp (twice_load, add_mixed (twice_load, 1));
+  t->recent_cpu      = add_mixed (mul_fp (coeff, t->recent_cpu), t->nice);
+}
+
+static void
+mlfqs_update_priority (struct thread *t, void *aux UNUSED)
+{
+  if (t == idle_thread)
+    return;
+ 
+  int p = fp_to_int_round (
+    sub_mixed (
+      sub_fp (int_to_fp (PRI_MAX), div_mixed (t->recent_cpu, 4)),
+      t->nice * 2
+    )
+  );
+ 
+  if (p > PRI_MAX) p = PRI_MAX;
+  if (p < PRI_MIN) p = PRI_MIN;
+  t->priority = p;
 }
 
 
