@@ -195,16 +195,12 @@ timer_interrupt (struct intr_frame *args UNUSED)
         e = list_next (e);
     }
 
-  /* MLFQS logic */
   if (thread_mlfqs)
     {
       struct thread *cur = thread_current ();
 
-      /* 1. Increment recent_cpu for running thread */
-      if (cur != idle_thread)
-        cur->recent_cpu = add_mixed (cur->recent_cpu, 1);
-
-      /* 2. Every second: update load_avg and recent_cpu for all threads */
+      /* 1. Every second: update load_avg and recent_cpu FIRST
+            before this tick's increment */
       if (ticks % TIMER_FREQ == 0)
         {
           int ready_threads = list_size (&ready_list);
@@ -217,30 +213,39 @@ timer_interrupt (struct intr_frame *args UNUSED)
           );
 
           struct list_elem *e;
-          for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
+          for (e = list_begin (&all_list); e != list_end (&all_list);
+               e = list_next (e))
             {
               struct thread *t = list_entry (e, struct thread, allelem);
               if (t != idle_thread)
                 {
                   fixed_t twice_load = mul_mixed (load_avg, 2);
-                  fixed_t coeff = div_fp (twice_load, add_mixed (twice_load, 1));
-                  t->recent_cpu = add_mixed (mul_fp (coeff, t->recent_cpu), t->nice);
+                  fixed_t coeff = div_fp (twice_load,
+                                         add_mixed (twice_load, 1));
+                  t->recent_cpu = add_mixed (mul_fp (coeff, t->recent_cpu),
+                                             t->nice);
                 }
             }
         }
 
-      /* 3. Every 4 ticks: recompute priority for all threads */
+      /* 2. Increment recent_cpu AFTER per-second update */
+      if (cur != idle_thread)
+        cur->recent_cpu = add_mixed (cur->recent_cpu, 1);
+
+      /* 3. Every 4 ticks: recompute priority */
       if (ticks % 4 == 0)
         {
           struct list_elem *e;
-          for (e = list_begin (&all_list); e != list_end (&all_list); e = list_next (e))
+          for (e = list_begin (&all_list); e != list_end (&all_list);
+               e = list_next (e))
             {
               struct thread *t = list_entry (e, struct thread, allelem);
               if (t != idle_thread)
                 {
                   int p = fp_to_int_round (
                     sub_mixed (
-                      sub_fp (int_to_fp (PRI_MAX), div_mixed (t->recent_cpu, 4)),
+                      sub_fp (int_to_fp (PRI_MAX),
+                              div_mixed (t->recent_cpu, 4)),
                       t->nice * 2
                     )
                   );

@@ -494,12 +494,22 @@ alloc_frame (struct thread *t, size_t size)
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
 static struct thread *
-next_thread_to_run (void) 
+next_thread_to_run (void)
 {
   if (list_empty (&ready_list))
     return idle_thread;
-  else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+
+  struct list_elem *best = list_begin (&ready_list);
+  struct list_elem *e;
+  for (e = list_next (best); e != list_end (&ready_list); e = list_next (e))
+    {
+      struct thread *t_best = list_entry (best, struct thread, elem);
+      struct thread *t_e    = list_entry (e,    struct thread, elem);
+      if (t_e->priority > t_best->priority)
+        best = e;
+    }
+  list_remove (best);
+  return list_entry (best, struct thread, elem);
 }
 
 /* Completes a thread switch by activating the new thread's page
