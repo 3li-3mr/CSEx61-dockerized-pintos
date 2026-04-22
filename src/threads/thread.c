@@ -71,6 +71,19 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+
+
+
+
+/* Returns true if thread A has higher priority than thread B. */
+static bool
+priority_less (const struct list_elem *a, const struct list_elem *b,
+               void *aux UNUSED)
+{
+  const struct thread *ta = list_entry (a, struct thread, elem);
+  const struct thread *tb = list_entry (b, struct thread, elem);
+  return (ta->priority > tb->priority);
+}
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -462,6 +475,15 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+
+
+
+  t->base_priority = priority;
+  list_init (&t->locks_held);
+  t->lock_waiting_for = NULL;
+
+
+  
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();

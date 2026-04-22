@@ -4,7 +4,6 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -23,6 +22,7 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+struct lock;
 
 /* A kernel thread or user process.
 
@@ -91,8 +91,19 @@ struct thread
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
-    struct list_elem elem;              /* List element. */
 
+
+   struct list_elem elem;
+
+
+
+
+
+
+   /* List element. */
+    int base_priority;/* Base priority set by thread_set_priority. */
+   struct list locks_held;/* All locks currently held by this thread. */
+   struct lock *lock_waiting_for;/* Lock this thread is waiting to acquire. */
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -138,4 +149,12 @@ void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
+
+
+
+
+
+
+void thread_donate_priority (struct thread *t);
+void thread_update_priority (struct thread *t);
 #endif /* threads/thread.h */
