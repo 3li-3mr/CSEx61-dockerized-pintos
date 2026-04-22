@@ -156,9 +156,22 @@ thread_tick (void)
   else
     kernel_ticks++;
 
-  /* Enforce preemption. */
-  if (++thread_ticks >= TIME_SLICE)
-    intr_yield_on_return ();
+  /* Enforce preemption.
+     In mlfqs mode, preemption is handled by the priority
+     recalculation every 4 ticks in timer_interrupt, so we
+     only use TIME_SLICE preemption in non-mlfqs mode. */
+  if (!thread_mlfqs)
+  {
+    if (++thread_ticks >= TIME_SLICE)
+      intr_yield_on_return ();
+  }
+  else
+  {
+    /* In mlfqs, still increment thread_ticks so
+       thread_schedule_tail() resets it correctly,
+       but preemption comes from timer_interrupt. */
+    thread_ticks++;
+  }
 }
 
 /* Prints thread statistics. */
@@ -772,7 +785,7 @@ mlfqs_update_priority (struct thread *t, void *aux UNUSED)
   if (t == idle_thread)
     return;
 
-  int p = fp_to_int_round (
+  int p = fp_to_int_trunc (          /* ← was fp_to_int_round, must be trunc */
     sub_mixed (
       sub_fp (int_to_fp (PRI_MAX), div_mixed (t->recent_cpu, 4)),
       t->nice * 2

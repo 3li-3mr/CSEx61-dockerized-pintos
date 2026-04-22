@@ -1,0 +1,35 @@
+[33mcommit 8e801c3bdd105bce1aacc8a439ebaf15f8545b3d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: Omar Assem <thegenius@thegenius.thegenius>
+Date:   Wed Apr 22 15:28:53 2026 +0200
+
+    m
+
+[1mdiff --git a/src/utils/squish-pty.c b/src/utils/squish-pty.c[m
+[1mindex e81043d..f1cd9dc 100644[m
+[1m--- a/src/utils/squish-pty.c[m
+[1m+++ b/src/utils/squish-pty.c[m
+[36m@@ -7,7 +7,7 @@[m
+ #include <stdio.h>[m
+ #include <stdlib.h>[m
+ #include <string.h>[m
+[31m-#include <stropts.h>[m
+[32m+[m[32m//#include <stropts.h>[m
+ #include <sys/ioctl.h>[m
+ #include <sys/stat.h>[m
+ #include <sys/time.h>[m
+[36m@@ -283,14 +283,7 @@[m [mmain (int argc __attribute__ ((unused)), char *argv[])[m
+   if (slave < 0)[m
+     fail_io ("open \"%s\"", name);[m
+ [m
+[31m-  /* System V implementations need STREAMS configuration for the[m
+[31m-     slave. */[m
+[31m-  if (isastream (slave))[m
+[31m-    {[m
+[31m-      if (ioctl (slave, I_PUSH, "ptem") < 0[m
+[31m-          || ioctl (slave, I_PUSH, "ldterm") < 0)[m
+[31m-        fail_io ("ioctl");[m
+[31m-    }[m
+[32m+[m[32m  /* STREAMS not supported on Linux - skipped */[m
+ [m
+   /* Arrange to get notified when a child dies, by writing a byte[m
+      to a pipe fd.  We really want to use pselect() and[m

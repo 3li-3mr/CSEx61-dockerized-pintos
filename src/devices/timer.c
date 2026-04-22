@@ -181,7 +181,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
 
-  /* Wake up any sleeping threads whose time has come */
+  /* Wake up sleeping threads whose time has come. */
   struct list_elem *e = list_begin (&sleep_list);
   while (e != list_end (&sleep_list))
     {
@@ -199,63 +199,66 @@ timer_interrupt (struct intr_frame *args UNUSED)
     {
       struct thread *cur = thread_current ();
 
-      /* 1. Every second: update load_avg and recent_cpu FIRST
-            before this tick's increment */
+      /* Every second: update load_avg, then all threads' recent_cpu. */
       if (ticks % TIMER_FREQ == 0)
         {
-          int ready_threads = list_size (&ready_list);
+          int ready_threads = (int) list_size (&ready_list);
           if (cur != idle_thread)
             ready_threads++;
 
           load_avg = add_fp (
-            mul_fp (div_fp (int_to_fp (59), int_to_fp (60)), load_avg),
-            mul_mixed (div_fp (int_to_fp (1), int_to_fp (60)), ready_threads)
+            mul_fp    (div_fp (int_to_fp (59), int_to_fp (60)), load_avg),
+            mul_mixed (div_fp (int_to_fp (1),  int_to_fp (60)), ready_threads)
           );
 
-          struct list_elem *e;
-          for (e = list_begin (&all_list); e != list_end (&all_list);
-               e = list_next (e))
+          struct list_elem *le;
+          for (le = list_begin (&all_list);
+               le != list_end (&all_list);
+               le = list_next (le))
             {
-              struct thread *t = list_entry (e, struct thread, allelem);
+              struct thread *t = list_entry (le, struct thread, allelem);
               if (t != idle_thread)
                 {
                   fixed_t twice_load = mul_mixed (load_avg, 2);
                   fixed_t coeff = div_fp (twice_load,
-                                         add_mixed (twice_load, 1));
+                                          add_mixed (twice_load, 1));
                   t->recent_cpu = add_mixed (mul_fp (coeff, t->recent_cpu),
                                              t->nice);
                 }
             }
         }
 
-      /* 2. Increment recent_cpu AFTER per-second update */
+      /* Every tick: increment recent_cpu for running thread. */
       if (cur != idle_thread)
         cur->recent_cpu = add_mixed (cur->recent_cpu, 1);
 
-      /* 3. Every 4 ticks: recompute priority */
-      if (ticks % 4 == 0)
+      /* Every 4 ticks: recompute priorities for all threads.
+         Use fp_to_int_trunc per the Pintos spec (truncate, not round). */
+    /* Every 4 ticks: recompute priorities and preempt. */
+    if (ticks % 4 == 0)
+    {
+      struct list_elem *le;
+      for (le = list_begin (&all_list);
+           le != list_end (&all_list);
+           le = list_next (le))
+      {
+        struct thread *t = list_entry (le, struct thread, allelem);
+        if (t != idle_thread)
         {
-          struct list_elem *e;
-          for (e = list_begin (&all_list); e != list_end (&all_list);
-               e = list_next (e))
-            {
-              struct thread *t = list_entry (e, struct thread, allelem);
-              if (t != idle_thread)
-                {
-                  int p = fp_to_int_round (
-                    sub_mixed (
-                      sub_fp (int_to_fp (PRI_MAX),
-                              div_mixed (t->recent_cpu, 4)),
-                      t->nice * 2
-                    )
-                  );
-                  if (p > PRI_MAX) p = PRI_MAX;
-                  if (p < PRI_MIN) p = PRI_MIN;
-                  t->priority = p;
-                }
-            }
-          intr_yield_on_return ();
+          int p = fp_to_int_trunc (
+            sub_mixed (
+              sub_fp (int_to_fp (PRI_MAX),
+                      div_mixed (t->recent_cpu, 4)),
+              t->nice * 2
+            )
+          );
+          if (p > PRI_MAX) p = PRI_MAX;
+          if (p < PRI_MIN) p = PRI_MIN;
+          t->priority = p;
         }
+      }
+      intr_yield_on_return ();  /* ← ADD THIS BACK for mlfqs preemption */
+    }
     }
 
   thread_tick ();

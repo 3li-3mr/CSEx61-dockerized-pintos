@@ -162,34 +162,33 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
 
   if (!list_empty (&sema->waiters))
-    {
-      list_sort (&sema->waiters, thread_priority_compare, NULL);
-      thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                  struct thread, elem));
-    }
+  {
+    list_sort (&sema->waiters, thread_priority_compare, NULL);
+    thread_unblock (list_entry (list_pop_front (&sema->waiters),
+                                struct thread, elem));
+  }
 
   sema->value++;
   intr_set_level (old_level);
 
-  /* Conditional Yield: Only yield if the woken thread is higher priority, 
-     and only in strict priority mode. */
-  if (!intr_context () && !thread_mlfqs)
+  /* Yield if the woken thread has higher priority than us.
+     This applies in both normal and mlfqs mode. */
+  if (!intr_context ())
+  {
+    old_level = intr_disable ();
+    if (!list_empty (&ready_list))
     {
-      old_level = intr_disable ();
-      if (!list_empty (&ready_list))
-        {
-          /* In strict priority mode, ready_list is kept perfectly sorted, 
-             so list_front is mathematically safe. */
-          struct thread *front = list_entry (list_front (&ready_list), struct thread, elem);
-          if (front->priority > thread_current ()->priority)
-            {
-              intr_set_level (old_level);
-              thread_yield ();
-              return;
-            }
-        }
-      intr_set_level (old_level);
+      struct thread *front = list_entry (list_front (&ready_list),
+                                         struct thread, elem);
+      if (front->priority > thread_current ()->priority)
+      {
+        intr_set_level (old_level);
+        thread_yield ();
+        return;
+      }
     }
+    intr_set_level (old_level);
+  }
 }
 
 static void sema_test_helper (void *sema_);
