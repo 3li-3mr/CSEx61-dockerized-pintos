@@ -213,6 +213,10 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  /* Preempt if new thread has higher priority. */
+  if (t->priority > thread_current ()->priority)
+    thread_yield ();
+
 
   return tid;
 }
@@ -250,7 +254,9 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+   // list_push_back (&ready_list, &t->elem);
+
+  list_insert_ordered (&ready_list, &t->elem, priority_less, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -321,7 +327,8 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    //list_push_back (&ready_list, &cur->elem);
+      list_insert_ordered (&ready_list, &cur->elem, priority_less, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -348,7 +355,18 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  struct thread *cur = thread_current ();
+  cur->base_priority = new_priority;
+  thread_update_priority (cur);
+
+  /* Yield if a ready thread now has higher priority. */
+  if (!list_empty (&ready_list))
+  {
+    struct thread *front = list_entry (list_front (&ready_list),
+                                       struct thread, elem);
+    if (front->priority > cur->priority)
+      thread_yield ();
+  }
 }
 
 /* Returns the current thread's priority. */
@@ -357,7 +375,53 @@ thread_get_priority (void)
 {
   return thread_current ()->priority;
 }
+void
+thread_update_priority (struct thread *t)
+{
+  int max = t->base_priority;
+  struct list_elem *e;
 
+  for (e = list_begin (&t->locks_held);
+       e != list_end (&t->locks_held);
+       e = list_next (e))
+  {
+    struct lock *l = list_entry (e, struct lock, elem);
+    if (l->max_priority > max)
+      max = l->max_priority;
+  }
+
+  t->priority = max;
+}
+
+/* Propagate priority donation up the chain of lock dependencies.
+   Limited to 8 levels to avoid infinite loops. */
+void
+thread_donate_priority (struct thread *t)
+{
+  int depth;
+  for (depth = 0; depth < 8; depth++)
+  {
+    if (t->lock_waiting_for == NULL)
+      break;
+
+    struct lock *l = t->lock_waiting_for;
+
+    /* Update the lock's max_priority. */
+    if (t->priority > l->max_priority)
+      l->max_priority = t->priority;
+
+    /* Move to the lock's holder. */
+    struct thread *holder = l->holder;
+    if (holder == NULL)
+      break;
+
+    /* Donate priority to holder if ours is higher. */
+    if (t->priority > holder->priority)
+      holder->priority = t->priority;
+
+    t = holder;
+  }
+}
 /* Sets the current thread's nice value to NICE. */
 void
 thread_set_nice (int nice UNUSED) 
