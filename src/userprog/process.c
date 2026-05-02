@@ -38,11 +38,62 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  /* Extract the executable name for the thread name */
+  char thread_name[16];
+  strlcpy (thread_name, file_name, sizeof thread_name);
+  char *save_ptr;
+  strtok_r (thread_name, " ", &save_ptr);
+
+  /* Create a new thread to execute the parsed THREAD_NAME. */
+  tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
+}
+
+static void
+setup_stack_args (void **esp, int argc, char **argv)
+{
+  char *arg_addresses[128];
+  int i;
+
+  /* 1. Push the strings right-to-left onto the stack */
+  for (i = argc - 1; i >= 0; i--)
+    {
+      size_t len = strlen (argv[i]) + 1; /* +1 for the null terminator */
+      *esp -= len;
+      strlcpy (*esp, argv[i], len);
+      arg_addresses[i] = *esp; /* Save the address for later */
+    }
+
+  /* 2. Word-align the stack to a multiple of 4 bytes. 
+     (Performance requirement for 80x86) */
+  *esp = (void *)((uint32_t)*esp & ~3);
+
+  /* 3. Push a null pointer sentinel (argv[argc] = null) */
+  *esp -= sizeof (char *);
+  *((char **)*esp) = NULL;
+
+  /* 4. Push the addresses of the strings right-to-left */
+  for (i = argc - 1; i >= 0; i--)
+    {
+      *esp -= sizeof (char *);
+      *((char **)*esp) = arg_addresses[i];
+    }
+
+  /* 5. Push argv (the memory address of argv[0]) */
+  char *argv_address = *esp;
+  *esp -= sizeof (char **);
+  *((char ***)*esp) = (char **)argv_address;
+
+  /* 6. Push argc */
+  *esp -= sizeof (int);
+  *((int *)*esp) = argc;
+
+  /* 7. Push a fake "return address" (0). 
+     User programs shouldn't return from main, they should call exit() */
+  *esp -= sizeof (void *);
+  *((void **)*esp) = NULL;
 }
 
 /* A thread function that loads a user process and starts it
@@ -54,26 +105,36 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
+  /* Parse the command line into an array of arguments */
+  char *argv[128];
+  int argc = 0;
+  char *token, *save_ptr;
+
+  for (token = strtok_r (file_name, " ", &save_ptr); token != NULL;
+       token = strtok_r (NULL, " ", &save_ptr))
+    {
+      argv[argc++] = token;
+    }
+
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+
+  /* Pass ONLY the executable name (argv[0]) to load */
+  success = load (argv[0], &if_.eip, &if_.esp);
+
+  /* If load is successful, format the stack */
+  if (success) 
+    {
+      setup_stack_args (&if_.esp, argc, argv);
+    }
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
-
-  /* Start the user process by simulating a return from an
-     interrupt, implemented by intr_exit (in
-     threads/intr-stubs.S).  Because intr_exit takes all of its
-     arguments on the stack in the form of a `struct intr_frame',
-     we just point the stack pointer (%esp) to our stack frame
-     and jump to it. */
-  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
-  NOT_REACHED ();
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -97,6 +158,8 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
