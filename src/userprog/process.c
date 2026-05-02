@@ -18,6 +18,12 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+struct exec_helper 
+{
+  const char *file_name;
+  struct child_status *status;
+};
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -44,10 +50,47 @@ process_execute (const char *file_name)
   char *save_ptr;
   strtok_r (thread_name, " ", &save_ptr);
 
+  struct child_status *child_stat = malloc (sizeof (struct child_status));
+  if (child_stat == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  child_stat->exit_status = -1;
+  child_stat->is_dead = false;
+  child_stat->load_success = false;
+  child_stat->ref_count = 2; 
+  sema_init (&child_stat->wait_sema, 0); 
+  sema_init (&child_stat->load_sema, 0);
+
+  struct exec_helper *helper = malloc (sizeof (struct exec_helper));
+  if (helper == NULL)
+    {
+      palloc_free_page (fn_copy);
+      free (child_stat);
+      return TID_ERROR;
+    }
+  helper->file_name = fn_copy;
+  helper->status = child_stat;
+
   /* Create a new thread to execute the parsed THREAD_NAME. */
-  tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (thread_name, PRI_DEFAULT, start_process, helper);
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    {
+      palloc_free_page (fn_copy); 
+      free (child_stat);
+      free (helper);
+      return TID_ERROR;
+    }
+  child_stat->tid = tid;
+  list_push_back (&thread_current ()->children, &child_stat->elem);
+  sema_down(&child_stat->load_sema);
+
+  if (!child_stat->load_success)
+    {
+      return TID_ERROR;
+    }
+
   return tid;
 }
 
@@ -99,9 +142,12 @@ setup_stack_args (void **esp, int argc, char **argv)
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *args)
 {
-  char *file_name = file_name_;
+  struct exec_helper* arg = (struct exec_helper *) args;
+  char* file_name = arg->file_name;
+  struct child_status* child = arg->status;
+  thread_current ()->my_status = child;
   struct intr_frame if_;
   bool success;
 
@@ -124,6 +170,8 @@ start_process (void *file_name_)
 
   /* Pass ONLY the executable name (argv[0]) to load */
   success = load (argv[0], &if_.eip, &if_.esp);
+  child->load_success = success;
+  sema_up(&child->load_sema);
 
   /* If load is successful, format the stack */
   if (success) 
@@ -132,9 +180,13 @@ start_process (void *file_name_)
     }
 
   /* If load failed, quit. */
+  free (args);
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
+
+  asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
+  NOT_REACHED ();
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -147,9 +199,31 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *cur = thread_current ();
+  struct list_elem *e;
+  struct child_status *child_stat = NULL;
+
+  for (e = list_begin (&cur->children); e != list_end (&cur->children);
+       e = list_next (e))
+    {
+      struct child_status *temp = list_entry (e, struct child_status, elem);
+      if (temp->tid == child_tid)
+        {
+          child_stat = temp;
+          break;
+        }
+    }
+  if (child_stat == NULL)
+    return -1;
+
+  sema_down (&child_stat->wait_sema);
+  int status = child_stat->exit_status;
+
+  list_remove (&child_stat->elem);
+  free (child_stat);
+  return status;
 }
 
 /* Free the current process's resources. */
@@ -161,6 +235,29 @@ process_exit (void)
 
   printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
+  if (cur->my_status != NULL)
+    {
+      cur->my_status->exit_status = cur->exit_status;
+      sema_up (&cur->my_status->wait_sema);
+      cur->my_status->ref_count--;
+      if (cur->my_status->ref_count == 0)
+        {
+          free (cur->my_status);
+        }
+    }
+
+  struct list_elem *e = list_begin (&cur->children);
+  while (e != list_end (&cur->children))
+    {
+      struct child_status *child_stat = list_entry (e, struct child_status, elem);
+      e = list_remove (e);
+      child_stat->ref_count--;
+      if (child_stat->ref_count == 0)
+        {
+          free (child_stat);
+        }
+    }
+  
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;

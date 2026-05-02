@@ -72,15 +72,15 @@ syscall_handler (struct intr_frame *f)
 
       case SYS_EXEC:
         {
-          /* Read 1 argument: const char *cmd_line */
-          
+          const char *cmd_line = (const char *)*(uint32_t *)get_arg (f, 4);
+          f->eax = process_execute (cmd_line);
           break;
         }
 
       case SYS_WAIT:
         {
-          /* Read 1 argument: pid_t pid */
-          
+          tid_t child_tid = *(tid_t *)get_arg (f, 4);
+          f->eax = process_wait (child_tid);
           break;
         }
 
