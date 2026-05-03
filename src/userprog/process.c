@@ -257,6 +257,23 @@ process_exit (void)
           free (child_stat);
         }
     }
+
+  if (cur->executable != NULL)
+    {
+      file_allow_write (cur->executable);
+      file_close (cur->executable);
+    }
+  
+  /* Close all open files to prevent resource leaks */
+  int fd;
+  for (fd = 2; fd < MAX_FD; fd++)
+    {
+      if (cur->fd_table[fd] != NULL)
+        {
+          file_close (cur->fd_table[fd]);
+          cur->fd_table[fd] = NULL;
+        }
+    }
   
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -472,7 +489,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if (success)
+    {
+      t->executable = file;
+      file_deny_write (file);
+    }
+  else
+    {
+      file_close (file);
+    }
   return success;
 }
 

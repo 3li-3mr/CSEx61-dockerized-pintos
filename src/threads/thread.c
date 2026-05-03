@@ -468,6 +468,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->my_status = NULL;
   t->next_fd = 2;                         
   memset(t->fd_table, 0, sizeof(t->fd_table));
+  t->executable = NULL;
 #endif
   t->magic = THREAD_MAGIC;
 

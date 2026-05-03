@@ -124,6 +124,7 @@ struct thread
     /* File descriptor table */
     struct file *fd_table[MAX_FD];  /* fd 0,1 reserved for stdin/stdout */
     int next_fd;                    /* starts at 2 */
+    struct file *executable;        /* Executable file for the current process */
 #endif
 
  
