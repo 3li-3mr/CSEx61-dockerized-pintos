@@ -462,11 +462,13 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
-  #ifdef USERPROG
-    t->exit_status = -1;
-    list_init(&t->children);
-    t->my_status = NULL;
-  #endif
+ #ifdef USERPROG
+  t->exit_status = -1;
+  list_init(&t->children);
+  t->my_status = NULL;
+  t->next_fd = 2;                         
+  memset(t->fd_table, 0, sizeof(t->fd_table));
+#endif
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -517,6 +519,41 @@ next_thread_to_run (void)
 
    After this function and its caller returns, the thread switch
    is complete. */
+
+#ifdef USERPROG
+   /* Adds FILE to the current thread's fd table.
+   Returns the assigned fd, or -1 if the table is full. */
+int
+thread_add_file (struct file *file)
+{
+  struct thread *t = thread_current ();
+  if (t->next_fd >= MAX_FD)
+    return -1;
+  int fd = t->next_fd++;
+  t->fd_table[fd] = file;
+  return fd;
+}
+
+/* Returns the struct file* for fd in the current thread,
+   or NULL if fd is invalid or not open. */
+struct file *
+thread_get_file (int fd)
+{
+  struct thread *t = thread_current ();
+  if (fd < 2 || fd >= MAX_FD)
+    return NULL;
+  return t->fd_table[fd];   /* NULL if slot is empty */
+}
+
+/* Removes fd from the current thread's fd table. */
+void
+thread_remove_file (int fd)
+{
+  struct thread *t = thread_current ();
+  if (fd >= 2 && fd < MAX_FD)
+    t->fd_table[fd] = NULL;
+}
+#endif
 void
 thread_schedule_tail (struct thread *prev)
 {
@@ -587,3 +624,5 @@ allocate_tid (void)
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+

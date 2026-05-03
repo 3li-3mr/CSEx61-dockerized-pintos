@@ -5,6 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/synch.h"
+#include "filesys/file.h"
+
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -95,6 +97,7 @@ struct child_status
     
     struct list_elem elem;              
   };
+  #define MAX_FD 128  
 
 struct thread
   {
@@ -107,7 +110,9 @@ struct thread
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
-    struct list_elem elem;              /* List element. */
+    struct list_elem elem;    
+              /* List element. */
+
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -115,11 +120,24 @@ struct thread
     int exit_status;            /* Records the exit status of this thread */
     struct list children;
     struct child_status *my_status;
+
+    /* File descriptor table */
+    struct file *fd_table[MAX_FD];  /* fd 0,1 reserved for stdin/stdout */
+    int next_fd;                    /* starts at 2 */
 #endif
+
+ 
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
+
+/* ---- fd helper declarations */
+#ifdef USERPROG
+int          thread_add_file  (struct file *file);
+struct file *thread_get_file  (int fd);
+void         thread_remove_file (int fd);
+#endif
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
